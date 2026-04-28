@@ -54,8 +54,8 @@ fn main() -> Result<()> {
     let mut measurements = Vec::with_capacity(2 + functions.len() * 2);
 
     // Untagged totals for regression detection.
-    measurements.push(m(total_lines, &[]));
-    measurements.push(m(total_copies, &[("unit", "copies")]));
+    measurements.push(m(total_lines, &[("summary_unit", "lines")]));
+    measurements.push(m(total_copies, &[("summary_unit", "copies")]));
 
     for (fn_name, lines, copies) in &functions {
         measurements.push(m(*lines, &[("function", fn_name), ("unit", "lines")]));
