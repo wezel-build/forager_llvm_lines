@@ -5,9 +5,44 @@ type LlvmLinesOutput = (u64, u64, Vec<LlvmRow>);
 use serde::Deserialize;
 use wezel_types::{ForagerPluginEnvelope, ForagerPluginOutput};
 
+const CARGO_LLVM_LINES_VERSION: &str = "0.4.45";
+
 #[derive(Deserialize)]
 struct LlvmLinesInputs {
     package: Option<String>,
+}
+
+fn ensure_cargo_llvm_lines_installed() -> Result<()> {
+    let probe = std::process::Command::new("cargo")
+        .args(["llvm-lines", "--help"])
+        .output();
+    if let Ok(out) = probe
+        && out.status.success()
+    {
+        return Ok(());
+    }
+
+    eprintln!(
+        "[forager-llvm-lines] cargo-llvm-lines not found; installing v{CARGO_LLVM_LINES_VERSION}..."
+    );
+    let status = std::process::Command::new("cargo")
+        .args([
+            "install",
+            "--locked",
+            "--quiet",
+            "--version",
+            CARGO_LLVM_LINES_VERSION,
+            "cargo-llvm-lines",
+        ])
+        .status()
+        .context("failed to spawn `cargo install cargo-llvm-lines`")?;
+    if !status.success() {
+        bail!(
+            "`cargo install --locked --version {CARGO_LLVM_LINES_VERSION} cargo-llvm-lines` failed (exit {})",
+            status.code().unwrap_or(-1)
+        );
+    }
+    Ok(())
 }
 
 fn main() -> Result<()> {
@@ -35,6 +70,8 @@ fn main() -> Result<()> {
         &std::fs::read_to_string(&inputs_path).with_context(|| format!("reading {inputs_path}"))?,
     )
     .context("parsing FORAGER_INPUTS")?;
+
+    ensure_cargo_llvm_lines_installed()?;
 
     let mut cmd = std::process::Command::new("cargo");
     cmd.arg("llvm-lines");
@@ -117,9 +154,6 @@ fn parse_llvm_lines_output(s: &str) -> Result<LlvmLinesOutput> {
     // Per-function rows: "<lines> (<pct>, <pct>)  <copies> (<pct>, <pct>)  <name>"
     let mut functions = Vec::new();
     for line in lines {
-        if functions.len() >= 50 {
-            break;
-        }
         let trimmed = line.trim();
         if trimmed.is_empty() {
             continue;
