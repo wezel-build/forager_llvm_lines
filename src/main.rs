@@ -1,16 +1,62 @@
 use anyhow::{Context, Result, bail};
+use forager_sdk::Forager;
+use schemars::JsonSchema;
+use serde::Deserialize;
+use wezel_types::ForagerPluginOutput;
 
 type LlvmRow = (String, u64, u64);
 type LlvmLinesOutput = (u64, u64, Vec<LlvmRow>);
-use serde::Deserialize;
-use wezel_types::{ForagerPluginEnvelope, ForagerPluginOutput};
 
 const CARGO_LLVM_LINES_VERSION: &str = "0.4.45";
 
-#[derive(Deserialize)]
+#[derive(Deserialize, JsonSchema)]
 struct LlvmLinesInputs {
+    /// Package name (required for workspaces).
     package: Option<String>,
 }
+
+struct LlvmLines;
+
+impl Forager for LlvmLines {
+    const NAME: &'static str = "llvm-lines";
+    const DESCRIPTION: &'static str = "Counts LLVM IR lines via cargo-llvm-lines";
+    const MEASUREMENTS_DOC: &'static str = "\
+**`llvm-lines`** — count of LLVM IR lines (or monomorphisation copies) for a \
+function (u64). Filter tags:\n\
+- `summary_unit = \"lines\"` or `\"copies\"` — crate-wide totals (one row each).\n\
+- `function = \"<symbol>\"` + `unit = \"lines\"`|`\"copies\"` — per-function rows.";
+    type Inputs = LlvmLinesInputs;
+
+    fn run(inputs: LlvmLinesInputs) -> Result<Vec<ForagerPluginOutput>> {
+        ensure_cargo_llvm_lines_installed()?;
+
+        let mut cmd = std::process::Command::new("cargo");
+        cmd.arg("llvm-lines");
+        if let Some(pkg) = &inputs.package {
+            cmd.args(["-p", pkg]);
+        }
+        let output = cmd.output().context("failed to run cargo llvm-lines")?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            bail!("cargo llvm-lines failed: {stderr}");
+        }
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let (total_lines, total_copies, functions) = parse_llvm_lines_output(&stdout)?;
+
+        let mut measurements = Vec::with_capacity(2 + functions.len() * 2);
+        measurements.push(m(total_lines, &[("summary_unit", "lines")]));
+        measurements.push(m(total_copies, &[("summary_unit", "copies")]));
+        for (fn_name, lines, copies) in &functions {
+            measurements.push(m(*lines, &[("function", fn_name), ("unit", "lines")]));
+            measurements.push(m(*copies, &[("function", fn_name), ("unit", "copies")]));
+        }
+        Ok(measurements)
+    }
+}
+
+forager_sdk::forager_main!(LlvmLines);
 
 fn ensure_cargo_llvm_lines_installed() -> Result<()> {
     let probe = std::process::Command::new("cargo")
@@ -45,67 +91,6 @@ fn ensure_cargo_llvm_lines_installed() -> Result<()> {
     Ok(())
 }
 
-fn main() -> Result<()> {
-    let args: Vec<String> = std::env::args().collect();
-    if args.get(1).is_some_and(|a| a == "--schema") {
-        println!(
-            "{}",
-            serde_json::json!({
-                "name": "llvm-lines",
-                "description": "Counts LLVM IR lines via cargo-llvm-lines",
-                "inputs": {
-                    "package": { "type": "string", "description": "Package name (required for workspaces)", "optional": true }
-                },
-                "output": {
-                    "description": "One `llvm-lines` measurement per function per unit (`lines` or `copies`), tagged with `function` and `unit`. Untagged totals are also emitted."
-                }
-            })
-        );
-        return Ok(());
-    }
-
-    let out_path = std::env::var("FORAGER_OUT").context("FORAGER_OUT not set")?;
-    let inputs_path = std::env::var("FORAGER_INPUTS").context("FORAGER_INPUTS not set")?;
-    let inputs: LlvmLinesInputs = serde_json::from_str(
-        &std::fs::read_to_string(&inputs_path).with_context(|| format!("reading {inputs_path}"))?,
-    )
-    .context("parsing FORAGER_INPUTS")?;
-
-    ensure_cargo_llvm_lines_installed()?;
-
-    let mut cmd = std::process::Command::new("cargo");
-    cmd.arg("llvm-lines");
-    if let Some(pkg) = &inputs.package {
-        cmd.args(["-p", pkg]);
-    }
-    let output = cmd.output().context("failed to run cargo llvm-lines")?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!("cargo llvm-lines failed: {stderr}");
-    }
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let (total_lines, total_copies, functions) = parse_llvm_lines_output(&stdout)?;
-
-    let mut measurements = Vec::with_capacity(2 + functions.len() * 2);
-
-    // Untagged totals for regression detection.
-    measurements.push(m(total_lines, &[("summary_unit", "lines")]));
-    measurements.push(m(total_copies, &[("summary_unit", "copies")]));
-
-    for (fn_name, lines, copies) in &functions {
-        measurements.push(m(*lines, &[("function", fn_name), ("unit", "lines")]));
-        measurements.push(m(*copies, &[("function", fn_name), ("unit", "copies")]));
-    }
-
-    let envelope = ForagerPluginEnvelope { measurements };
-    std::fs::write(&out_path, serde_json::to_string(&envelope)?)
-        .with_context(|| format!("writing {out_path}"))?;
-
-    Ok(())
-}
-
 fn m(value: u64, tags: &[(&str, &str)]) -> ForagerPluginOutput {
     ForagerPluginOutput {
         name: "llvm-lines".to_string(),
@@ -126,8 +111,6 @@ fn m(value: u64, tags: &[(&str, &str)]) -> ForagerPluginOutput {
 ///   361539                12556                (TOTAL)
 ///     6639 (1.8%,  1.8%)     22 (0.2%,  0.2%)  core::ops::function::FnOnce::call_once
 /// ```
-///
-/// Returns `(total_lines, total_copies, Vec<(name, lines, copies)>)`.
 fn parse_llvm_lines_output(s: &str) -> Result<LlvmLinesOutput> {
     let mut lines = s.lines();
 
@@ -139,7 +122,6 @@ fn parse_llvm_lines_output(s: &str) -> Result<LlvmLinesOutput> {
         }
     }
 
-    // TOTAL row: "<total_lines>  <total_copies>  (TOTAL)"
     let total_line = lines.next().context("no TOTAL line after separator")?;
     let mut total_parts = total_line.split_whitespace();
     let total_lines: u64 = total_parts
@@ -151,7 +133,6 @@ fn parse_llvm_lines_output(s: &str) -> Result<LlvmLinesOutput> {
         .and_then(|s| s.parse().ok())
         .context("could not parse total copies count")?;
 
-    // Per-function rows: "<lines> (<pct>, <pct>)  <copies> (<pct>, <pct>)  <name>"
     let mut functions = Vec::new();
     for line in lines {
         let trimmed = line.trim();
