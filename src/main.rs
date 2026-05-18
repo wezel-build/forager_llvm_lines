@@ -20,7 +20,7 @@ struct LlvmLines;
 impl Forager for LlvmLines {
     const NAME: &'static str = "llvm-lines";
     const DESCRIPTION: &'static str = "Counts LLVM IR lines via cargo-llvm-lines";
-    const MEASUREMENTS_DOC: &'static str = "\
+    const OUTCOMES_DOC: &'static str = "\
 **`llvm-lines`** — count of LLVM IR lines (or monomorphisation copies) for a \
 function (u64). Filter tags:\n\
 - `summary_unit = \"lines\"` or `\"copies\"` — crate-wide totals (one row each).\n\
@@ -45,14 +45,14 @@ function (u64). Filter tags:\n\
         let stdout = String::from_utf8_lossy(&output.stdout);
         let (total_lines, total_copies, functions) = parse_llvm_lines_output(&stdout)?;
 
-        let mut measurements = Vec::with_capacity(2 + functions.len() * 2);
-        measurements.push(m(total_lines, &[("summary_unit", "lines")]));
-        measurements.push(m(total_copies, &[("summary_unit", "copies")]));
+        let mut outcomes = Vec::with_capacity(2 + functions.len() * 2);
+        outcomes.push(m(total_lines, &[("summary_unit", "lines")]));
+        outcomes.push(m(total_copies, &[("summary_unit", "copies")]));
         for (fn_name, lines, copies) in &functions {
-            measurements.push(m(*lines, &[("function", fn_name), ("unit", "lines")]));
-            measurements.push(m(*copies, &[("function", fn_name), ("unit", "copies")]));
+            outcomes.push(m(*lines, &[("function", fn_name), ("unit", "lines")]));
+            outcomes.push(m(*copies, &[("function", fn_name), ("unit", "copies")]));
         }
-        Ok(measurements)
+        Ok(outcomes)
     }
 }
 
