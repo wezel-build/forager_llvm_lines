@@ -2,7 +2,7 @@ use anyhow::{Context, Result, bail};
 use forager_sdk::Forager;
 use schemars::JsonSchema;
 use serde::Deserialize;
-use wezel_types::ForagerPluginOutput;
+use forager_sdk::ForagerPluginOutput;
 
 type LlvmRow = (String, u64, u64);
 type LlvmLinesOutput = (u64, u64, Vec<LlvmRow>);
